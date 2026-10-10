@@ -57,6 +57,7 @@ async function apiBusy(btn,req){
   finally{if(btn){btn.disabled=false;btn.textContent=old}}
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res({b64:String(r.result).split(',')[1],mime:file.type||'image/jpeg'});r.onerror=rej;r.readAsDataURL(file)})}
+function fileToPhoto(file){return new Promise((res,rej)=>{const img=new Image();img.onload=()=>{const M=1600;let w=img.naturalWidth,h=img.naturalHeight;if(w>M||h>M){const k=M/Math.max(w,h);w=Math.round(w*k);h=Math.round(h*k)}const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);URL.revokeObjectURL(img.src);res({b64:c.toDataURL('image/jpeg',0.82).split(',')[1],mime:'image/jpeg'})};img.onerror=()=>{URL.revokeObjectURL(img.src);rej('Could not read that image')};img.src=URL.createObjectURL(file)})}
 
 /* ---------- login ---------- */
 function viewLogin(){
@@ -174,7 +175,7 @@ function setType(t){draft.type=t;document.querySelectorAll('#seg button').forEac
 async function uploadPhotos(input){
   const room=4-draft.photos.length;
   for(const f of [...input.files].slice(0,room)){
-    const b=await fileToB64(f);
+    const b=await fileToPhoto(f);
     draft.photos.push(b);
     const g=document.createElement('div');g.className='g sel';g.style.backgroundImage=`url('${URL.createObjectURL(f)}')`;
     g.onclick=()=>{draft.photos.splice(draft.photos.indexOf(b),1);g.remove()};
@@ -272,7 +273,7 @@ function viewProject(pid){
   const updates=S.updates.filter(u=>u.projectId===pid).sort((x,y)=>y.ts-x.ts);
   const pend=approvals.filter(a=>a.status==='pending');
   const customerView=S.me.role==='customer'||S.me.role==='admin';
-  app.innerHTML=`${topbar(S.me.role==='pm'?'Project Manager view':'Customer view')}
+  app.innerHTML=`${topbar(S.me.role==='pm'?'Project Manager view':(S.me.role==='admin'?'Project view':'Customer view'))}
   <div class="card proj-card" style="margin-top:10px">${p.cover?`<div class="cover" style="background-image:url('${p.cover}');height:170px"><span class="pct">${p.progress}% complete</span></div>`:''}
   <div class="body"><h3>${esc(p.name)}</h3><div class="proj-meta">${esc(p.loc)} ${p.type?'· '+esc(p.type):''}<br>Project Manager: ${esc(p.pm||'-')}</div>
   <div class="progress"><i style="width:${p.progress}%"></i></div></div></div>
@@ -341,7 +342,7 @@ function viewAdmin(){
   <div class="section-label">Projects</div>
   <div class="grid proj-grid">${projs.map(p=>{
     const pc=S.approvals.filter(a=>a.projectId===p.id&&a.status==='pending').length;
-    return `<div class="card proj-card"><div class="body"><div style="display:flex;align-items:center;gap:8px"><h3 style="flex:1">${esc(p.name)}</h3>${pc?`<span class="chip amber">${pc} pending</span>`:'<span class="chip green">Clear</span>'}</div>
+    return `<div class="card proj-card" onclick="go('#/project/${p.id}')" style="cursor:pointer">${p.cover?`<div class="cover" style="background-image:url('${p.cover}')"><span class="pct">${p.progress}% complete</span></div>`:''}<div class="body"><div style="display:flex;align-items:center;gap:8px"><h3 style="flex:1">${esc(p.name)}</h3>${pc?`<span class="chip amber">${pc} pending</span>`:'<span class="chip green">Clear</span>'}</div>
     <div class="proj-meta">${esc(p.loc)} · PM ${esc(p.pm||'-')}<br>Customer: ${esc((p.customers||[]).join(' & '))}</div>
     <div style="display:flex;align-items:center;gap:10px"><div class="progress" style="flex:1"><i style="width:${p.progress}%"></i></div><b style="font-size:13px">${p.progress}%</b></div></div></div>`;
   }).join('')||'<div class="card empty">No projects yet - add your first from Manage projects.</div>'}</div>
@@ -379,7 +380,7 @@ async function addProject(btn){
   if(!name)return toast('Add the project name');
   let cover=null,coverMime=null;
   const cf=document.getElementById('np-cover').files[0];
-  if(cf){const b=await fileToB64(cf);cover=b.b64;coverMime=b.mime}
+  if(cf){const b=await fileToPhoto(cf);cover=b.b64;coverMime=b.mime}
   const j=await apiBusy(btn,{action:'addProject',token:TOKEN,name,loc:document.getElementById('np-loc').value.trim(),type:document.getElementById('np-type').value.trim(),customers:document.getElementById('np-cust').value.split('&').map(s=>s.trim()).filter(Boolean),pm:document.getElementById('np-pm').value.trim(),coverB64:cover,coverMime});
   if(j){toast('Project added');viewAdminProjects()}
 }
@@ -398,7 +399,7 @@ function editProject(pid){
 async function saveProject(btn,pid){
   let cover=null,coverMime=null;
   const cf=document.getElementById('ep-cover-'+pid).files[0];
-  if(cf){const b=await fileToB64(cf);cover=b.b64;coverMime=b.mime}
+  if(cf){const b=await fileToPhoto(cf);cover=b.b64;coverMime=b.mime}
   const j=await apiBusy(btn,{action:'updateProject',token:TOKEN,projectId:pid,name:document.getElementById('ep-name-'+pid).value,loc:document.getElementById('ep-loc-'+pid).value,type:document.getElementById('ep-type-'+pid).value,customers:document.getElementById('ep-cust-'+pid).value.split('&').map(s=>s.trim()).filter(Boolean),pm:document.getElementById('ep-pm-'+pid).value,progress:document.getElementById('ep-prog-'+pid).value,coverB64:cover,coverMime});
   if(j){toast('Saved');viewAdminProjects()}
 }
