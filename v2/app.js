@@ -20,7 +20,7 @@ function topbar(crumb){
 }
 function chipFor(status){if(status==='pending')return '<span class="chip amber">Awaiting customer</span>';if(status==='approved')return '<span class="chip green">Approved</span>';return '<span class="chip red">Changes requested</span>'}
 function typeChip(t){return t==='material'?'<span class="chip blue">Material delivery</span>':'<span class="chip grey">Progress</span>'}
-function photosHtml(photos){if(!photos||!photos.length)return '';const n=Math.min(photos.length,4);return `<div class="photo-grid n${n}">`+photos.slice(0,4).map(p=>`<img src="${p}" loading="lazy" alt="Site photo" onclick="lightbox('${p}')">`).join('')+`</div>`}
+function photosHtml(photos){if(!photos||!photos.length)return '';const n=Math.min(photos.length,4);return `<div class="photo-grid n${n}">`+photos.slice(0,4).map(p=>`<img src="${mediaUrl(p)}" loading="lazy" alt="Site photo" onclick="lightbox('${mediaUrl(p)}')">`).join('')+`</div>`}
 function lightbox(src){overlayRoot.innerHTML=`<div class="lb" onclick="closeOverlay()"><button>Close</button><img src="${src}" alt="Site photo full view"></div>`}
 function closeOverlay(){overlayRoot.innerHTML=''}
 
@@ -58,6 +58,7 @@ async function apiBusy(btn,req){
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res({b64:String(r.result).split(',')[1],mime:file.type||'image/jpeg'});r.onerror=rej;r.readAsDataURL(file)})}
 function fileToPhoto(file){return new Promise((res,rej)=>{const img=new Image();img.onload=()=>{const M=1600;let w=img.naturalWidth,h=img.naturalHeight;if(w>M||h>M){const k=M/Math.max(w,h);w=Math.round(w*k);h=Math.round(h*k)}const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);URL.revokeObjectURL(img.src);res({b64:c.toDataURL('image/jpeg',0.82).split(',')[1],mime:'image/jpeg'})};img.onerror=()=>{URL.revokeObjectURL(img.src);rej('Could not read that image')};img.src=URL.createObjectURL(file)})}
+function mediaUrl(p){const m=String(p||'').match(/[?&]id=([\w-]+)/)||String(p||'').match(/\/d\/([\w-]+)/);return m?('https://lh3.googleusercontent.com/d/'+m[1]):p}
 
 /* ---------- login ---------- */
 function viewLogin(){
@@ -131,7 +132,7 @@ function viewPM(){
   const myProjects=Object.values(S.projects);
   const cards=myProjects.map(p=>{
     const pend=S.approvals.filter(a=>a.projectId===p.id&&a.status==='pending').length;
-    return `<div class="card proj-card">${p.cover?`<div class="cover" style="background-image:url('${p.cover}')"><span class="pct">${p.progress}% complete</span></div>`:''}
+    return `<div class="card proj-card">${p.cover?`<div class="cover" style="background-image:url('${mediaUrl(p.cover)}')"><span class="pct">${p.progress}% complete</span></div>`:''}
     <div class="body"><h3>${esc(p.name)}</h3><div class="proj-meta">${esc(p.loc)} ${p.type?'· '+esc(p.type):''}<br>Customer: ${esc((p.customers||[]).join(' & '))}</div>
     <div class="progress"><i style="width:${p.progress}%"></i></div>
     <div style="display:flex;gap:8px;align-items:center;margin-top:4px">${pend?`<span class="chip amber">${pend} approval${pend>1?'s':''} pending</span>`:'<span class="chip green">Nothing pending</span>'}
@@ -274,7 +275,7 @@ function viewProject(pid){
   const pend=approvals.filter(a=>a.status==='pending');
   const customerView=S.me.role==='customer'||S.me.role==='admin';
   app.innerHTML=`${topbar(S.me.role==='pm'?'Project Manager view':(S.me.role==='admin'?'Project view':'Customer view'))}
-  <div class="card proj-card" style="margin-top:10px">${p.cover?`<div class="cover" style="background-image:url('${p.cover}');height:170px"><span class="pct">${p.progress}% complete</span></div>`:''}
+  <div class="card proj-card" style="margin-top:10px">${p.cover?`<div class="cover" style="background-image:url('${mediaUrl(p.cover)}');height:170px"><span class="pct">${p.progress}% complete</span></div>`:''}
   <div class="body"><h3>${esc(p.name)}</h3><div class="proj-meta">${esc(p.loc)} ${p.type?'· '+esc(p.type):''}<br>Project Manager: ${esc(p.pm||'-')}</div>
   <div class="progress"><i style="width:${p.progress}%"></i></div></div></div>
   ${pend.length?`<div class="section-label">Needs your decision</div><div class="feed">${pend.map(a=>approvalCard(a,customerView)).join('')}</div>`:''}
@@ -342,7 +343,7 @@ function viewAdmin(){
   <div class="section-label">Projects</div>
   <div class="grid proj-grid">${projs.map(p=>{
     const pc=S.approvals.filter(a=>a.projectId===p.id&&a.status==='pending').length;
-    return `<div class="card proj-card" onclick="go('#/project/${p.id}')" style="cursor:pointer">${p.cover?`<div class="cover" style="background-image:url('${p.cover}')"><span class="pct">${p.progress}% complete</span></div>`:''}<div class="body"><div style="display:flex;align-items:center;gap:8px"><h3 style="flex:1">${esc(p.name)}</h3>${pc?`<span class="chip amber">${pc} pending</span>`:'<span class="chip green">Clear</span>'}</div>
+    return `<div class="card proj-card" onclick="go('#/project/${p.id}')" style="cursor:pointer">${p.cover?`<div class="cover" style="background-image:url('${mediaUrl(p.cover)}')"><span class="pct">${p.progress}% complete</span></div>`:''}<div class="body"><div style="display:flex;align-items:center;gap:8px"><h3 style="flex:1">${esc(p.name)}</h3>${pc?`<span class="chip amber">${pc} pending</span>`:'<span class="chip green">Clear</span>'}</div>
     <div class="proj-meta">${esc(p.loc)} · PM ${esc(p.pm||'-')}<br>Customer: ${esc((p.customers||[]).join(' & '))}</div>
     <div style="display:flex;align-items:center;gap:10px"><div class="progress" style="flex:1"><i style="width:${p.progress}%"></i></div><b style="font-size:13px">${p.progress}%</b></div></div></div>`;
   }).join('')||'<div class="card empty">No projects yet - add your first from Manage projects.</div>'}</div>
