@@ -39,7 +39,7 @@ function storeFile_(name, mime, b64) {
   f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
   return f.getId();
 }
-function fileUrl_(id) { return id ? 'https://drive.google.com/thumbnail?id=' + id + '&sz=w1200' : ''; }
+function fileUrl_(id) { return id ? 'https://drive.usercontent.google.com/download?id=' + id + '&export=view' : ''; }
 
 /* ---------- auth ---------- */
 function tokenFor_(userId) {
