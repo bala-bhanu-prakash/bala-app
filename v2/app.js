@@ -1,6 +1,6 @@
 /* ============ Bala - live app (API client) ============ */
 const DAY=864e5, HOUR=36e5, MIN=6e4;
-let API_URL='';
+var API_URL=window.API_URL||'';
 let S=null;            // state from backend
 let TOKEN=localStorage.getItem('bala.token')||'';
 
