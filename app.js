@@ -142,8 +142,9 @@ function viewPM(){
   app.innerHTML=`${topbar('Project Manager view')}
   <div class="hero" style="padding-top:10px"><h1>Namaste, ${esc(S.me.name.split(' ')[0])} 👋</h1><p>Post an update — customers see it instantly, and you can send it on WhatsApp in one tap.</p></div>
   <div class="card" style="padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-    <div style="flex:1;min-width:200px"><b>Bills &amp; invoices</b> <span class="admin-only">Admin only</span><div style="color:var(--muted);font-size:13px">Add vendor bills and invoices. Only the admin can see them.</div></div>
+    <div style="flex:1;min-width:200px"><b>Bills &amp; invoices</b> <span class="admin-only">Admin only</span><div style="color:var(--muted);font-size:13px">Add vendor bills and invoices. The admin reviews them and approves or asks for add-ons.</div></div>
     <button class="btn primary sm" onclick="go('#/pm/bill')">+ Add bill / invoice</button></div>
+  ${myBillsHtml()}
   ${myProjects.length?`<div class="section-label">Your projects</div><div class="grid proj-grid">${cards}</div>`:'<div class="card empty">No projects assigned to you yet - ask the admin.</div>'}`;
 }
 let draft={type:'progress',photos:[]};
@@ -215,7 +216,7 @@ function viewBillForm(){
   billFile=null;
   const opts=Object.values(S.projects).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
   app.innerHTML=`${topbar('Project Manager view')}
-  <div class="hero" style="padding:14px 0 4px"><h1 style="font-size:22px">Add bill / invoice <span class="admin-only">Admin only</span></h1><p>Visible only to the admin. Stored in the company Google Drive.</p></div>
+  <div class="hero" style="padding:14px 0 4px"><h1 style="font-size:22px">Add bill / invoice <span class="admin-only">Admin only</span></h1><p>Goes to the admin for review. Stored in the company Google Drive.</p></div>
   <div class="card" style="padding:18px;margin-top:10px">
     <div class="field"><label>Project</label><select id="b-proj">${opts}</select></div>
     <div class="field"><label>Vendor / supplier</label><input type="text" id="b-vendor" placeholder="e.g. Sri Lakshmi Cement Traders"></div>
@@ -247,15 +248,65 @@ async function submitBill(btn){
     plain:`🧾 New bill added — ${p.name}\n\n${S.me.name} added a bill from ${vendor} for ₹${amt.toLocaleString('en-IN')}.\n\nSign in to view: ${appLink('#/admin')}`,
     btn:'Open bills →',href:'#/admin',after:'#/pm'});
 }
-function billsHtml(){
-  const bills=[...S.bills].sort((a,b)=>b.ts-a.ts);
-  const total=bills.reduce((s,b)=>s+b.amount,0);
-  return `<div class="section-label">Bills &amp; invoices <span class="admin-only">Admin only</span></div>
-  <div class="card"><div style="padding:12px 16px;font-size:13.5px;color:var(--muted)">${bills.length} bills · total <b style="color:var(--ink)">₹${total.toLocaleString('en-IN')}</b></div>
-  ${bills.map(b=>`<div class="bill-row"><div><b>${esc(b.vendor)}</b>${b.no?` · ${esc(b.no)}`:''}<br><span style="color:var(--muted);font-size:12.5px">${esc(projectName(b.projectId))} · added by ${esc(b.by)} · ${b.date?new Date(b.date).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):fullTime(b.ts)}${b.note?'<br>'+esc(b.note):''}</span></div>
-    <div class="amt">₹${b.amount.toLocaleString('en-IN')}${b.file?`<br><a href="https://drive.google.com/file/d/${b.file}/view" target="_blank" rel="noopener" style="font-size:12.5px;font-weight:600">View file</a>`:''}</div></div>`).join('')||'<div class="empty">No bills yet.</div>'}</div>`;
+function billFileId(b){
+  const v=String(b.fileId||b.file||'');if(!v)return '';
+  const m=v.match(/[?&]id=([\w-]+)/)||v.match(/\/d\/([\w-]+)/);
+  return m?m[1]:v;
 }
-
+function billFileLink(b){const id=billFileId(b);return id?`<a href="https://drive.google.com/file/d/${id}/view" target="_blank" rel="noopener" style="font-size:12.5px;font-weight:600">View file</a>`:'<span style="font-size:12px;color:var(--muted)">No file</span>'}
+function billStatusChip(b){return b.status==='approved'?'<span class="chip green">Approved</span>':(b.status==='addons'?'<span class="chip red">Add-ons asked</span>':'<span class="chip amber">Needs review</span>')}
+function billRow(b,showProject,actions){
+  return `<div class="bill-row" style="align-items:flex-start;flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>${esc(b.vendor)}</b>${b.no?` · ${esc(b.no)}`:''} ${billStatusChip(b)}<br><span style="color:var(--muted);font-size:12.5px">${showProject?esc(projectName(b.projectId))+' · ':''}added by ${esc(b.by)} · ${b.date?new Date(b.date).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):fullTime(b.ts)}${b.note?'<br>'+esc(b.note):''}${b.status==='addons'&&b.adminNote?`<br><b style="color:var(--red)">Admin asked: ${esc(b.adminNote)}</b>`:''}</span></div>
+    <div class="amt">₹${b.amount.toLocaleString('en-IN')}<br>${billFileLink(b)}</div>
+    ${actions?`<div style="flex-basis:100%;display:flex;gap:8px;flex-wrap:wrap">${actions}</div>`:''}</div>`;
+}
+/* universal board: bills waiting for admin review */
+function billsHtml(){
+  const all=[...(S.bills||[])].sort((a,b)=>b.ts-a.ts);
+  const open=all.filter(b=>b.status!=='approved');
+  const apprTotal=all.filter(b=>b.status==='approved').reduce((s,b)=>s+b.amount,0);
+  return `<div class="section-label">Bills to review <span class="admin-only">Admin only</span></div>
+  <div class="card"><div style="padding:12px 16px;font-size:13.5px;color:var(--muted)">${open.length} waiting · approved bills (₹${apprTotal.toLocaleString('en-IN')}) move into each project's page</div>
+  ${open.map(b=>billRow(b,true,b.status==='pending'?`<button class="btn green sm" onclick="reviewBill(this,'${b.id}','approved')">✓ Approve</button><button class="btn ghost sm" onclick="askAddons(this,'${b.id}')">Ask for add-ons</button>`:`<span style="font-size:12.5px;color:var(--muted)">Waiting for ${esc(b.by)} to send the add-on.</span><button class="btn green sm" onclick="reviewBill(this,'${b.id}','approved')">✓ Approve anyway</button>`)).join('')||'<div class="empty">No bills waiting for review.</div>'}</div>`;
+}
+/* per-project bills section: approved bills only */
+function projectBillsHtml(pid){
+  if(S.me.role!=='admin')return '';
+  const bills=(S.bills||[]).filter(b=>b.projectId===pid&&b.status==='approved').sort((a,b)=>b.ts-a.ts);
+  const waiting=(S.bills||[]).filter(b=>b.projectId===pid&&b.status!=='approved').length;
+  const total=bills.reduce((s,b)=>s+b.amount,0);
+  return `<div class="section-label">Bills <span class="admin-only">Admin only</span></div>
+  <div class="card"><div style="padding:12px 16px;font-size:13.5px;color:var(--muted)">${bills.length} approved · total <b style="color:var(--ink)">₹${total.toLocaleString('en-IN')}</b>${waiting?` · ${waiting} still waiting on the admin board`:''}</div>
+  ${bills.map(b=>billRow(b,false,'')).join('')||'<div class="empty">No approved bills for this project yet.</div>'}</div>`;
+}
+/* PM: own bills that were sent back */
+function myBillsHtml(){
+  const mine=(S.bills||[]).filter(b=>b.status!=='approved').sort((a,b)=>b.ts-a.ts);
+  if(!mine.length)return '';
+  return `<div class="section-label">Your bills in review</div><div class="card">${mine.map(b=>billRow(b,true,b.status==='addons'?`<button class="btn primary sm" onclick="addonForm('${b.id}')">Send add-on</button>`:'')).join('')}<div id="addon-form"></div></div>`;
+}
+async function reviewBill(btn,id,decision,note){
+  const j=await apiBusy(btn,{action:'reviewBill',token:TOKEN,billId:id,decision,note:note||''});
+  if(j){toast(decision==='approved'?'Bill approved - moved to its project':'Sent back for add-ons');render()}
+}
+function askAddons(btn,id){
+  const note=prompt('What add-on do you need from the PM? (e.g. GST invoice copy, vendor name, correct amount)');
+  if(note&&note.trim())reviewBill(btn,id,'addons',note.trim());
+}
+let addonFile=null;
+function addonForm(id){
+  addonFile=null;
+  document.getElementById('addon-form').innerHTML=`<div style="padding:14px 16px;border-top:1px solid var(--line)"><div class="field"><label>Add-on note</label><textarea id="ad-note" style="min-height:60px" placeholder="What did you add or fix?"></textarea></div>
+  <div class="field"><label>New file (optional)</label><input type="file" accept="image/*,application/pdf" onchange="pickAddon(this)"></div>
+  <button class="btn primary sm" onclick="sendAddon(this,'${id}')">Send back for review</button></div>`;
+}
+async function pickAddon(input){const f=input.files[0];if(!f)return;if(f.size>4*1024*1024){input.value='';return toast('File too large (max ~4 MB)')}addonFile=await fileToB64(f);addonFile.name=f.name}
+async function sendAddon(btn,id){
+  const note=document.getElementById('ad-note').value.trim();
+  if(!note&&!addonFile)return toast('Add a note or a file');
+  const j=await apiBusy(btn,{action:'resubmitBill',token:TOKEN,billId:id,note,fileB64:addonFile?addonFile.b64:null,fileMime:addonFile?addonFile.mime:null,fileName:addonFile?addonFile.name:null});
+  if(j){toast('Sent back to admin');render()}
+}
 /* ---------- customer ---------- */
 function viewCustomer(){
   const items=Object.values(S.projects).map(p=>{
@@ -281,6 +332,7 @@ function viewProject(pid){
   ${pend.length?`<div class="section-label">Needs your decision</div><div class="feed">${pend.map(a=>approvalCard(a,customerView)).join('')}</div>`:''}
   <div class="section-label">Site updates</div>
   <div class="feed">${updates.length?updates.map(updateCard).join(''):'<div class="card empty">No updates yet.</div>'}</div>
+  ${projectBillsHtml(pid)}
   ${approvals.filter(a=>a.status!=='pending').length?`<div class="section-label">Past decisions</div><div class="feed">${approvals.filter(a=>a.status!=='pending').map(a=>approvalCard(a,customerView)).join('')}</div>`:''}`;
 }
 function viewApprove(aid){

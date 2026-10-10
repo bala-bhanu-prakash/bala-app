@@ -2,6 +2,7 @@
    Bala - construction site updates & approvals
    Backend: Google Apps Script web app (runs under the OWNER's Google
    account; all data + photos + bills live in the OWNER's Drive).
+   v3: cache layer (fast reads), bills review workflow, fileId for bills.
    Setup: paste this file into script.google.com, Deploy > New
    deployment > Web app > Execute as: Me > Access: Anyone.
    ================================================================ */
@@ -9,29 +10,84 @@
 var FOLDER_NAME = 'Bala App Data';
 var DB_FILE = 'data.json';
 
-/* ---------- storage ---------- */
+/* ---------- storage (with cache layer) ---------- */
+var CK = 'db_v1';            // cache key prefix for the database
+var CHUNK = 90000;           // CacheService allows ~100 KB per key
+function props_() { return PropertiesService.getScriptProperties(); }
+function emptyDb_() { return { users: [], projects: {}, updates: [], approvals: [], bills: [], log: [], settings: { waNumber: '' } }; }
+
 function folder_() {
+  var P = props_(), id = P.getProperty('FOLDER_ID');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
   var it = DriveApp.getFoldersByName(FOLDER_NAME);
-  return it.hasNext() ? it.next() : DriveApp.createFolder(FOLDER_NAME);
+  var f = it.hasNext() ? it.next() : DriveApp.createFolder(FOLDER_NAME);
+  P.setProperty('FOLDER_ID', f.getId());
+  return f;
 }
 function mediaFolder_() {
+  var P = props_(), id = P.getProperty('MEDIA_ID');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
   var root = folder_();
   var it = root.getFoldersByName('media');
-  return it.hasNext() ? it.next() : root.createFolder('media');
+  var f = it.hasNext() ? it.next() : root.createFolder('media');
+  P.setProperty('MEDIA_ID', f.getId());
+  return f;
+}
+function dbFile_() {
+  var P = props_(), id = P.getProperty('DB_ID');
+  if (id) { try { return DriveApp.getFileById(id); } catch (e) {} }
+  var it = folder_().getFilesByName(DB_FILE);
+  if (!it.hasNext()) return null;
+  var f = it.next();
+  P.setProperty('DB_ID', f.getId());
+  return f;
+}
+function cacheGet_() {
+  try {
+    var c = CacheService.getScriptCache();
+    var n = c.get(CK + '_n');
+    if (!n) return null;
+    var keys = [];
+    for (var i = 0; i < Number(n); i++) keys.push(CK + '_' + i);
+    var got = c.getAll(keys), txt = '';
+    for (var j = 0; j < keys.length; j++) { if (got[keys[j]] == null) return null; txt += got[keys[j]]; }
+    return JSON.parse(txt);
+  } catch (e) { return null; }
+}
+function cachePut_(json) {
+  try {
+    var c = CacheService.getScriptCache(), obj = {}, n = Math.ceil(json.length / CHUNK);
+    for (var i = 0; i < n; i++) obj[CK + '_' + i] = json.substr(i * CHUNK, CHUNK);
+    obj[CK + '_n'] = String(n);
+    c.putAll(obj, 21600);
+  } catch (e) { try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {} }
+}
+function normalize_(db) {
+  ['users', 'approvals', 'bills', 'log', 'updates'].forEach(function (k) { if (!db[k]) db[k] = []; });
+  if (!db.projects) db.projects = {};
+  if (!db.settings) db.settings = { waNumber: '' };
+  db.bills.forEach(function (b) {
+    if (!b.status) b.status = 'pending';          // older bills go to the review board
+    if (!b.fileId && b.file) { var m = String(b.file).match(/[?&]id=([\w-]+)/) || String(b.file).match(/\/d\/([\w-]+)/); b.fileId = m ? m[1] : String(b.file); }
+  });
+  return db;
 }
 function load_() {
-  var it = folder_().getFilesByName(DB_FILE);
-  if (!it.hasNext()) {
-    return { users: [], projects: {}, updates: [], approvals: [], bills: [], log: [], settings: { waNumber: '' } };
-  }
-  var txt = it.next().getBlob().getDataAsString();
-  try { return JSON.parse(txt); } catch (e) { return { users: [], projects: {}, updates: [], approvals: [], bills: [], log: [], settings: { waNumber: '' } }; }
+  var cached = cacheGet_();
+  if (cached) return normalize_(cached);
+  var f = dbFile_();
+  if (!f) return emptyDb_();
+  var txt = f.getBlob().getDataAsString(), db;
+  try { db = JSON.parse(txt); } catch (e) { return emptyDb_(); }
+  cachePut_(txt);
+  return normalize_(db);
 }
 function save_(db) {
-  var it = folder_().getFilesByName(DB_FILE);
   var json = JSON.stringify(db);
-  if (it.hasNext()) it.next().setContent(json);
-  else folder_().createFile(DB_FILE, json, MimeType.PLAIN_TEXT);
+  var f = dbFile_();
+  if (f) f.setContent(json);
+  else { var nf = folder_().createFile(DB_FILE, json, MimeType.PLAIN_TEXT); props_().setProperty('DB_ID', nf.getId()); }
+  cachePut_(json);          // write-through: next read is instant
 }
 function storeFile_(name, mime, b64) {
   var blob = Utilities.newBlob(Utilities.base64Decode(b64), mime, name);
@@ -73,6 +129,7 @@ function stateFor_(db, u) {
   ids.forEach(function (pid) { if (db.projects[pid]) out.projects[pid] = db.projects[pid]; });
   out.updates = db.updates.filter(function (x) { return out.projects[x.projectId]; });
   out.approvals = db.approvals.filter(function (x) { return out.projects[x.projectId]; });
+  if (u.role === 'pm') out.bills = db.bills.filter(function (b) { return b.byId === u.id || (!b.byId && b.by === u.name); });
   if (u.role === 'admin') {
     out.bills = db.bills;
     out.log = db.log.slice(-400).reverse();
@@ -86,19 +143,24 @@ function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify({ ok: true, service: 'bala-backend', time: Date.now() }))
     .setMimeType(ContentService.MimeType.JSON);
 }
+var READ_ONLY_ = { login: 1, state: 1 };
+function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 function doPost(e) {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
+  var req;
+  try { req = JSON.parse(e.postData.contents || '{}'); } catch (err) { return out_({ ok: false, error: 'Bad request.' }); }
+  var readOnly = READ_ONLY_[req.action] === 1;
+  var lock = null;
   try {
-    var req = JSON.parse(e.postData.contents || '{}');
+    if (!readOnly) { lock = LockService.getScriptLock(); lock.waitLock(20000); }
     var db = load_();
     var res = handle_(db, req);
-    save_(db);
-    return ContentService.createTextOutput(JSON.stringify(res)).setMimeType(ContentService.MimeType.JSON);
+    if (!readOnly) save_(db);
+    return out_(res);
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err) })).setMimeType(ContentService.MimeType.JSON);
+    if (!readOnly) { try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {} }  // drop cache after a failed write
+    return out_({ ok: false, error: String(err) });
   } finally {
-    lock.releaseLock();
+    if (lock) lock.releaseLock();
   }
 }
 
@@ -257,9 +319,42 @@ function handle_(db, req) {
     if (!p5) throw 'Project not found.';
     if (!req.vendor) throw 'Add the vendor name.';
     if (!(Number(req.amount) > 0)) throw 'Add the bill amount.';
-    var fid = req.fileB64 ? fileUrl_(storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'bill'), req.fileMime || 'application/pdf', req.fileB64)) : '';
-    db.bills.push({ id: uid_('b'), projectId: p5.id, vendor: String(req.vendor).trim(), no: req.no || '', amount: Number(req.amount), date: req.date || new Date().toISOString().slice(0, 10), note: req.note || '', file: fid, by: u.name, ts: Date.now() });
-    logIt_(db, u.name, p5.id, 'added a bill', req.vendor + ' · Rs.' + Number(req.amount).toLocaleString('en-IN') + ' (admin only)');
+    var fid = req.fileB64 ? storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'bill'), req.fileMime || 'application/pdf', req.fileB64) : '';
+    db.bills.push({ id: uid_('b'), projectId: p5.id, vendor: String(req.vendor).trim(), no: req.no || '', amount: Number(req.amount), date: req.date || new Date().toISOString().slice(0, 10), note: req.note || '', file: fid, fileId: fid, fileName: req.fileName || '', status: 'pending', adminNote: '', by: u.name, byId: u.id, ts: Date.now() });
+    logIt_(db, u.name, p5.id, 'added a bill', req.vendor + ' · Rs.' + Number(req.amount).toLocaleString('en-IN') + ' (sent for admin review)');
+    return { ok: true, state: stateFor_(db, u) };
+  }
+  if (a === 'reviewBill') {
+    require_(db, req.token, ['admin']);
+    var rb = null;
+    for (var i = 0; i < db.bills.length; i++) if (db.bills[i].id === req.billId) rb = db.bills[i];
+    if (!rb) throw 'Bill not found.';
+    if (req.decision === 'approved') {
+      rb.status = 'approved';
+      rb.adminNote = req.note ? String(req.note) : rb.adminNote;
+      rb.reviewedTs = Date.now();
+      logIt_(db, u.name, rb.projectId, 'approved a bill', rb.vendor + ' · Rs.' + rb.amount.toLocaleString('en-IN') + ' (moved to the project)');
+    } else if (req.decision === 'addons') {
+      if (!req.note) throw 'Say what add-on is needed (document, detail or correction).';
+      rb.status = 'addons';
+      rb.adminNote = String(req.note);
+      rb.reviewedTs = Date.now();
+      logIt_(db, u.name, rb.projectId, 'asked for add-ons on a bill', rb.vendor + ': "' + rb.adminNote + '"');
+    } else throw 'Unknown decision.';
+    return { ok: true, state: stateFor_(db, u) };
+  }
+  if (a === 'resubmitBill') {
+    // PM (owner of the bill) or admin sends an add-on / corrected file back for review
+    var ru = require_(db, req.token, ['pm', 'admin']);
+    var sb = null;
+    for (var i = 0; i < db.bills.length; i++) if (db.bills[i].id === req.billId) sb = db.bills[i];
+    if (!sb) throw 'Bill not found.';
+    if (ru.role === 'pm' && sb.byId !== ru.id && sb.by !== ru.name) throw 'Not your bill.';
+    if (sb.status === 'approved') throw 'This bill is already approved.';
+    if (req.note) sb.note = (sb.note ? sb.note + '\n' : '') + 'Add-on: ' + String(req.note);
+    if (req.fileB64) { var nid = storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'addon'), req.fileMime || 'application/pdf', req.fileB64); sb.file = nid; sb.fileId = nid; sb.fileName = req.fileName || ''; }
+    sb.status = 'pending';
+    logIt_(db, u.name, sb.projectId, 'sent a bill back for review', sb.vendor + (req.note ? ': "' + String(req.note).slice(0, 60) + '"' : ''));
     return { ok: true, state: stateFor_(db, u) };
   }
 
