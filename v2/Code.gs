@@ -1,21 +1,21 @@
-/* ================================================================
-   Brightlook Homes - construction site updates, approvals & payments
-   Backend: Google Apps Script web app (runs under the OWNER's account).
+/* =====================================================================
+   Brightlook Homes Backend (Google Apps Script)
    v4: fast uploads, lightweight responses, payments, branding.
-   Setup: paste into script.google.com (replace all of Code.gs), save, then
-   Deploy > Manage deployments > pencil > Version: New version > Deploy.
-   Do NOT use "New deployment" - that changes the URL.
-   ================================================================ */
-
+===================================================================== */
 var FOLDER_NAME = 'Bala App Data';
 var DB_FILE = 'data.json';
 var DEFAULT_BRAND = 'Brightlook Homes';
-
-/* ---------- storage (with cache layer) ---------- */
 var CK = 'db_v1';
 var CHUNK = 90000;
+
 function props_() { return PropertiesService.getScriptProperties(); }
-function emptyDb_() { return { users: [], projects: {}, updates: [], approvals: [], bills: [], payments: [], log: [], settings: { waNumber: '', brandName: DEFAULT_BRAND, tagline: '' } }; }
+
+function emptyDb_() { 
+  return { 
+    users: [], projects: {}, updates: [], approvals: [], bills: [], payments: [], log: [], 
+    settings: { waNumber: '', brandName: DEFAULT_BRAND, tagline: '' } 
+  }; 
+}
 
 function folder_() {
   var P = props_(), id = P.getProperty('FOLDER_ID');
@@ -25,6 +25,7 @@ function folder_() {
   P.setProperty('FOLDER_ID', f.getId());
   return f;
 }
+
 function mediaFolder_() {
   var P = props_(), id = P.getProperty('MEDIA_ID');
   if (id) {
@@ -41,14 +42,14 @@ function mediaFolder_() {
   ensureShared_(f);
   return f;
 }
-// Share the media FOLDER once; every file inside inherits it.
-// (Sharing each file separately was one of the slowest steps.)
+
 function ensureShared_(f) {
   var P = props_();
   if (P.getProperty('MEDIA_SHARED') === '1') return;
   f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
   P.setProperty('MEDIA_SHARED', '1');
 }
+
 function dbFile_() {
   var P = props_(), id = P.getProperty('DB_ID');
   if (id) { try { return DriveApp.getFileById(id); } catch (e) {} }
@@ -58,6 +59,7 @@ function dbFile_() {
   P.setProperty('DB_ID', f.getId());
   return f;
 }
+
 function cacheGet_() {
   try {
     var c = CacheService.getScriptCache();
@@ -66,31 +68,45 @@ function cacheGet_() {
     var keys = [];
     for (var i = 0; i < Number(n); i++) keys.push(CK + '_' + i);
     var got = c.getAll(keys), txt = '';
-    for (var j = 0; j < keys.length; j++) { if (got[keys[j]] == null) return null; txt += got[keys[j]]; }
+    for (var j = 0; j < keys.length; j++) { 
+      if (got[keys[j]] == null) return null; 
+      txt += got[keys[j]]; 
+    }
     return JSON.parse(txt);
   } catch (e) { return null; }
 }
+
 function cachePut_(json) {
   try {
     var c = CacheService.getScriptCache(), obj = {}, n = Math.ceil(json.length / CHUNK);
     for (var i = 0; i < n; i++) obj[CK + '_' + i] = json.substr(i * CHUNK, CHUNK);
     obj[CK + '_n'] = String(n);
     c.putAll(obj, 21600);
-  } catch (e) { try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {} }
+  } catch (e) { 
+    try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {}
+  }
 }
+
 function normalize_(db) {
-  ['users', 'approvals', 'bills', 'log', 'updates', 'payments'].forEach(function (k) { if (!db[k]) db[k] = []; });
+  ['users', 'approvals', 'bills', 'log', 'updates', 'payments'].forEach(function (k) { 
+    if (!db[k]) db[k] = []; 
+  });
   if (!db.projects) db.projects = {};
   if (!db.settings) db.settings = {};
   if (db.settings.waNumber == null) db.settings.waNumber = '';
   if (!db.settings.brandName || db.settings.brandName === 'Bala') db.settings.brandName = DEFAULT_BRAND;
   if (db.settings.tagline == null) db.settings.tagline = '';
+  
   db.bills.forEach(function (b) {
     if (!b.status) b.status = 'pending';
-    if (!b.fileId && b.file) { var m = String(b.file).match(/[?&]id=([\w-]+)/) || String(b.file).match(/\/d\/([\w-]+)/); b.fileId = m ? m[1] : String(b.file); }
+    if (!b.fileId && b.file) { 
+      var m = String(b.file).match(/[?&]id=([\w-]+)/) || String(b.file).match(/\/d\/([\w-]+)/); 
+      b.fileId = m ? m[1] : String(b.file); 
+    }
   });
   return db;
 }
+
 function load_() {
   var cached = cacheGet_();
   if (cached) return normalize_(cached);
@@ -101,52 +117,63 @@ function load_() {
   cachePut_(txt);
   return normalize_(db);
 }
+
 function save_(db) {
   var json = JSON.stringify(db);
-  cachePut_(json);          // cache first: reads are instant right away
+  cachePut_(json);
   var f = dbFile_();
   if (f) f.setContent(json);
-  else { var nf = folder_().createFile(DB_FILE, json, MimeType.PLAIN_TEXT); props_().setProperty('DB_ID', nf.getId()); }
+  else { 
+    var nf = folder_().createFile(DB_FILE, json, MimeType.PLAIN_TEXT);
+    props_().setProperty('DB_ID', nf.getId()); 
+  }
 }
+
 function storeFile_(name, mime, b64) {
   var blob = Utilities.newBlob(Utilities.base64Decode(b64), mime, name);
-  return mediaFolder_().createFile(blob).getId();   // no per-file setSharing: folder is shared
+  return mediaFolder_().createFile(blob).getId();
 }
-function fileUrl_(id) { return id ? 'https://drive.usercontent.google.com/download?id=' + id + '&export=view' : ''; }
 
-/* ---------- auth ---------- */
+function fileUrl_(id) { 
+  return id ? 'https://drive.usercontent.google.com/download?id=' + id + '&export=view' : ''; 
+}
+
 function tokenFor_(userId) {
   var t = Utilities.getUuid() + Utilities.getUuid();
   CacheService.getScriptCache().put('t_' + t, userId, 21600);
   return t;
 }
+
 function userFor_(db, token) {
   if (!token) return null;
   var uid = CacheService.getScriptCache().get('t_' + token);
   if (!uid) return null;
-  for (var i = 0; i < db.users.length; i++) if (db.users[i].id === uid) return db.users[i];
+  for (var i = 0; i < db.users.length; i++) {
+    if (db.users[i].id === uid) return db.users[i];
+  }
   return null;
 }
+
 function require_(db, token, roles) {
   var u = userFor_(db, token);
   if (!u) throw 'Sign in again.';
   if (roles && roles.indexOf(u.role) < 0) throw 'Not allowed for your login.';
   return u;
 }
+
 function uid_(p) { return p + Utilities.getUuid().replace(/-/g, '').slice(0, 10); }
+
 function logIt_(db, actor, projectId, action, detail) {
-  db.log.push({ ts: Date.now(), actor: actor, projectId: projectId || '', action: action, detail: detail || '' });
+  db.log.push({ts: Date.now(), actor: actor, projectId: projectId || '', action: action, detail: detail || ''});
   if (db.log.length > 2000) db.log = db.log.slice(-2000);
 }
 
-/* ---------- state shaping per role ---------- */
 function stateFor_(db, u) {
   var out = { me: { id: u.id, name: u.name, role: u.role, username: u.username }, settings: db.settings, projects: {}, updates: [], approvals: [], payments: [] };
   var ids = u.role === 'admin' ? Object.keys(db.projects) : (u.projectIds || []);
   ids.forEach(function (pid) { if (db.projects[pid]) out.projects[pid] = db.projects[pid]; });
   out.updates = db.updates.filter(function (x) { return out.projects[x.projectId]; });
   out.approvals = db.approvals.filter(function (x) { return out.projects[x.projectId]; });
-  // payments are visible to admin and customers only (not site managers)
   if (u.role === 'admin' || u.role === 'customer') out.payments = db.payments.filter(function (x) { return out.projects[x.projectId]; });
   if (u.role === 'pm') out.bills = db.bills.filter(function (b) { return b.byId === u.id || (!b.byId && b.by === u.name); });
   if (u.role === 'admin') {
@@ -156,8 +183,7 @@ function stateFor_(db, u) {
   }
   return out;
 }
-// Fast responses: when the app sends lite:true it gets just the changed item back
-// (and applies it locally) instead of the whole state.
+
 function reply_(db, u, req, extra) {
   var r = { ok: true };
   if (extra) for (var k in extra) r[k] = extra[k];
@@ -165,18 +191,20 @@ function reply_(db, u, req, extra) {
   return r;
 }
 
-/* ---------- entry points ---------- */
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, service: 'bala-backend', time: Date.now() }))
-    .setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ok: true, service: 'bala-backend', time: Date.now()})).setMimeType(ContentService.MimeType.JSON);
 }
-// no lock + no database write: login, state, public branding, photo upload
-var READ_ONLY_ = { login: 1, state: 1, 'public': 1, uploadPhoto: 1 };
-function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+
+var READ_ONLY = { login: 1, state: 1, 'public': 1, uploadPhoto: 1 };
+
+function out_(o) { 
+  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); 
+}
+
 function doPost(e) {
   var req;
-  try { req = JSON.parse(e.postData.contents || '{}'); } catch (err) { return out_({ ok: false, error: 'Bad request.' }); }
-  var readOnly = READ_ONLY_[req.action] === 1;
+  try { req = JSON.parse(e.postData.contents || '{}'); } catch (err) { return out_({ok: false, error: 'Bad request.'}); }
+  var readOnly = READ_ONLY[req.action] === 1;
   var lock = null;
   try {
     if (!readOnly) { lock = LockService.getScriptLock(); lock.waitLock(20000); }
@@ -186,7 +214,7 @@ function doPost(e) {
     return out_(res);
   } catch (err) {
     if (!readOnly) { try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {} }
-    return out_({ ok: false, error: String(err) });
+    return out_({ok: false, error: String(err)});
   } finally {
     if (lock) lock.releaseLock();
   }
@@ -194,10 +222,8 @@ function doPost(e) {
 
 function handle_(db, req) {
   var a = req.action;
-
-  // Branding for the login screen (before anyone signs in)
   if (a === 'public') return { ok: true, brandName: db.settings.brandName, tagline: db.settings.tagline };
-
+  
   if (a === 'login') {
     for (var i = 0; i < db.users.length; i++) {
       var u = db.users[i];
@@ -207,7 +233,7 @@ function handle_(db, req) {
     }
     throw 'Wrong ID or password.';
   }
-
+  
   if (a === 'bootstrap') {
     if (db.users.length) throw 'Already set up.';
     if (!req.name || !req.username || !req.pass) throw 'Name, ID and password are needed.';
@@ -217,21 +243,17 @@ function handle_(db, req) {
     logIt_(db, admin.name, '', 'set up the app', 'Admin account created');
     return { ok: true, token: tokenFor_(admin.id), state: stateFor_(db, admin) };
   }
-
+  
   var u = require_(db, req.token, null);
-
   if (a === 'state') return { ok: true, state: stateFor_(db, u) };
-
-  /* ----- photo upload: run in PARALLEL from the app, one call per photo.
-         No lock, no database write, so several photos upload at once. ----- */
+  
   if (a === 'uploadPhoto') {
     require_(db, req.token, ['pm', 'admin']);
     if (!req.b64) throw 'No photo received.';
     var id = storeFile_('photo-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '.jpg', req.mime || 'image/jpeg', req.b64);
     return { ok: true, fileId: id, url: fileUrl_(id) };
   }
-
-  /* ----- settings ----- */
+  
   if (a === 'saveSettings') {
     require_(db, req.token, ['admin']);
     if (req.waNumber != null) db.settings.waNumber = String(req.waNumber).trim();
@@ -239,19 +261,20 @@ function handle_(db, req) {
     if (req.tagline != null) db.settings.tagline = String(req.tagline).trim();
     return { ok: true, state: stateFor_(db, u) };
   }
-
-  /* ----- users (admin) ----- */
+  
   if (a === 'addUser') {
     require_(db, req.token, ['admin']);
     if (!req.name || !req.username || !req.pass || !req.role) throw 'Name, ID, password and role are needed.';
     if (['admin', 'pm', 'customer'].indexOf(req.role) < 0) throw 'Role must be admin, pm or customer.';
-    for (var i = 0; i < db.users.length; i++)
+    for (var i = 0; i < db.users.length; i++) {
       if (db.users[i].username.toLowerCase() === String(req.username).trim().toLowerCase()) throw 'That ID is already taken.';
+    }
     var nu = { id: uid_('u'), username: String(req.username).trim(), pass: String(req.pass), role: req.role, name: String(req.name).trim(), projectIds: req.projectIds || [], phone: req.phone || '' };
     db.users.push(nu);
     logIt_(db, u.name, '', 'added a login', nu.name + ' (' + req.role + ')');
     return { ok: true, state: stateFor_(db, u) };
   }
+  
   if (a === 'updateUser') {
     require_(db, req.token, ['admin']);
     var tu = null;
@@ -264,6 +287,7 @@ function handle_(db, req) {
     logIt_(db, u.name, '', 'updated a login', tu.name);
     return { ok: true, state: stateFor_(db, u) };
   }
+  
   if (a === 'deleteUser') {
     require_(db, req.token, ['admin']);
     if (req.userId === u.id) throw 'You cannot delete your own login.';
@@ -271,21 +295,20 @@ function handle_(db, req) {
     logIt_(db, u.name, '', 'removed a login', req.userId);
     return { ok: true, state: stateFor_(db, u) };
   }
-
-  /* ----- projects (admin) ----- */
+  
   if (a === 'addProject') {
     require_(db, req.token, ['admin']);
     if (!req.name) throw 'Project name is needed.';
     var pid = uid_('p');
     db.projects[pid] = {
       id: pid, name: String(req.name).trim(), loc: req.loc || '', type: req.type || '',
-      customers: req.customers || [], pm: req.pm || '', progress: 0,
-      contractValue: Number(req.contractValue) || 0,
-      cover: req.coverB64 ? fileUrl_(storeFile_('cover-' + pid + '.jpg', req.coverMime || 'image/jpeg', req.coverB64)) : ''
+      customers: req.customers || [], pm: req.pm || '', contractValue: Number(req.contractValue) || 0,
+      progress: 0, cover: req.coverB64 ? fileUrl_(storeFile_('cover-' + pid + '.jpg', req.coverMime || 'image/jpeg', req.coverB64)) : ''
     };
     logIt_(db, u.name, pid, 'added a project', req.name);
     return { ok: true, projectId: pid, state: stateFor_(db, u) };
   }
+  
   if (a === 'updateProject') {
     require_(db, req.token, ['admin']);
     var p = db.projects[req.projectId];
@@ -298,6 +321,7 @@ function handle_(db, req) {
     logIt_(db, u.name, p.id, 'updated project details', p.name);
     return { ok: true, state: stateFor_(db, u) };
   }
+  
   if (a === 'deleteProject') {
     require_(db, req.token, ['admin']);
     delete db.projects[req.projectId];
@@ -308,19 +332,14 @@ function handle_(db, req) {
     logIt_(db, u.name, '', 'removed a project', req.projectId);
     return { ok: true, state: stateFor_(db, u) };
   }
-
-  /* ----- updates (pm or admin) -----
-     Fast path: the app uploads photos first with uploadPhoto (in parallel),
-     then sends photoIds here. Old path (photos: [{b64}]) still works. */
+  
   if (a === 'postUpdate') {
     require_(db, req.token, ['pm', 'admin']);
     var p2 = db.projects[req.projectId];
     if (!p2) throw 'Project not found.';
     if (!req.note) throw 'Write a short note.';
     var photos = (req.photoIds || []).map(fileUrl_);
-    (req.photos || []).forEach(function (ph, i) {
-      photos.push(fileUrl_(storeFile_('update-' + Date.now() + '-' + i + '.jpg', ph.mime || 'image/jpeg', ph.b64)));
-    });
+    (req.photos || []).forEach(function (ph, i) { photos.push(fileUrl_(storeFile_('update-' + Date.now() + '-' + i + '.jpg', ph.mime || 'image/jpeg', ph.b64))); });
     var pct = req.progressPct != null ? Number(req.progressPct) : null;
     var upd = { id: uid_('u'), projectId: p2.id, type: req.type === 'material' ? 'material' : 'progress', author: u.name, note: String(req.note), photos: photos, progressPct: pct, ts: Date.now() };
     db.updates.push(upd);
@@ -328,22 +347,20 @@ function handle_(db, req) {
     logIt_(db, u.name, p2.id, req.type === 'material' ? 'logged a material delivery' : 'posted a progress update', String(req.note).slice(0, 70));
     return reply_(db, u, req, { update: upd, progress: p2.progress });
   }
-
-  /* ----- approvals ----- */
+  
   if (a === 'requestApproval') {
     require_(db, req.token, ['pm', 'admin']);
     var p3 = db.projects[req.projectId];
     if (!p3) throw 'Project not found.';
     if (!req.title) throw 'Add what the customer should decide.';
     var aphotos = (req.photoIds || []).map(fileUrl_);
-    (req.photos || []).forEach(function (ph, i) {
-      aphotos.push(fileUrl_(storeFile_('approval-' + Date.now() + '-' + i + '.jpg', ph.mime || 'image/jpeg', ph.b64)));
-    });
+    (req.photos || []).forEach(function (ph, i) { aphotos.push(fileUrl_(storeFile_('approval-' + Date.now() + '-' + i + '.jpg', ph.mime || 'image/jpeg', ph.b64))); });
     var ap = { id: uid_('a'), projectId: p3.id, title: String(req.title).trim(), detail: req.detail || 'Please review and respond.', photos: aphotos, options: req.options || [], status: 'pending', comment: '', decidedBy: '', ts: Date.now(), decidedTs: null };
     db.approvals.push(ap);
     logIt_(db, u.name, p3.id, 'requested an approval', ap.title);
     return reply_(db, u, req, { approval: ap });
   }
+  
   if (a === 'decide') {
     var ap2 = null;
     for (var i = 0; i < db.approvals.length; i++) if (db.approvals[i].id === req.approvalId) ap2 = db.approvals[i];
@@ -353,12 +370,11 @@ function handle_(db, req) {
     ap2.status = req.status === 'approved' ? 'approved' : 'rejected';
     ap2.decidedTs = Date.now();
     ap2.decidedBy = u.name;
-    ap2.comment = (req.choice ? req.choice + '. ' : '') + (req.comment || '');
-    logIt_(db, u.name, ap2.projectId, ap2.status === 'approved' ? 'approved' : 'asked for changes on', ap2.title + (ap2.comment ? ': "' + ap2.comment + '"' : ''));
+    ap2.comment = (req.choice ? req.choice + '.' : '') + (req.comment || '');
+    logIt_(db, u.name, ap2.projectId, ap2.status === 'approved' ? 'approved' : 'asked for changes on', ap2.title + (ap2.comment ? ':' + ap2.comment : ''));
     return reply_(db, u, req, { approval: ap2, projectName: p4 ? p4.name : '' });
   }
-
-  /* ----- payments (admin adds; customers of that project can view) ----- */
+  
   if (a === 'addPayment') {
     require_(db, req.token, ['admin']);
     var pp = db.projects[req.projectId];
@@ -367,35 +383,40 @@ function handle_(db, req) {
     var pay = {
       id: uid_('pay'), projectId: pp.id, amount: Number(req.amount),
       date: req.date || new Date().toISOString().slice(0, 10),
-      mode: req.mode || '',            // e.g. Cash, UPI, Bank transfer, Cheque
-      ref: req.ref || '',              // transaction / cheque no.
-      stage: req.stage || '',          // e.g. Advance, Slab, Finishing
+      mode: req.mode || '', ref: req.ref || '', stage: req.stage || '',
       note: req.note || '', by: u.name, ts: Date.now()
     };
     db.payments.push(pay);
-    logIt_(db, u.name, pp.id, 'recorded a payment', 'Rs.' + pay.amount.toLocaleString('en-IN') + (pay.stage ? ' · ' + pay.stage : ''));
+    logIt_(db, u.name, pp.id, 'recorded a payment', 'Rs.' + pay.amount.toLocaleString('en-IN') + (pay.stage ? ' - ' + pay.stage : ''));
     return reply_(db, u, req, { payment: pay });
   }
+  
   if (a === 'updatePayment') {
     require_(db, req.token, ['admin']);
     var up = null;
     for (var i = 0; i < db.payments.length; i++) if (db.payments[i].id === req.paymentId) up = db.payments[i];
     if (!up) throw 'Payment not found.';
-    if (req.amount != null) { if (!(Number(req.amount) > 0)) throw 'Add the amount received.'; up.amount = Number(req.amount); }
+    if (req.amount != null) { 
+      if (!(Number(req.amount) > 0)) throw 'Add the amount received.'; 
+      up.amount = Number(req.amount); 
+    }
     ['date', 'mode', 'ref', 'stage', 'note'].forEach(function (k) { if (req[k] != null) up[k] = String(req[k]); });
     logIt_(db, u.name, up.projectId, 'edited a payment', 'Rs.' + up.amount.toLocaleString('en-IN'));
     return reply_(db, u, req, { payment: up });
   }
+  
   if (a === 'deletePayment') {
     require_(db, req.token, ['admin']);
     var gone = null;
-    db.payments = db.payments.filter(function (x) { if (x.id === req.paymentId) { gone = x; return false; } return true; });
+    db.payments = db.payments.filter(function (x) { 
+      if (x.id === req.paymentId) { gone = x; return false; } 
+      return true; 
+    });
     if (!gone) throw 'Payment not found.';
-    logIt_(db, u.name, gone.projectId, 'removed a payment', 'Rs.' + gone.amount.toLocaleString('en-IN'));
+    logIt_(db, u.name, gone.projectId, 'removed a payment', 'Rs. ' + gone.amount.toLocaleString('en-IN'));
     return reply_(db, u, req, { deleted: gone.id });
   }
-
-  /* ----- bills ----- */
+  
   if (a === 'addBill') {
     require_(db, req.token, ['pm', 'admin']);
     var p5 = db.projects[req.projectId];
@@ -404,9 +425,10 @@ function handle_(db, req) {
     if (!(Number(req.amount) > 0)) throw 'Add the bill amount.';
     var fid = req.fileId || (req.fileB64 ? storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'bill'), req.fileMime || 'application/pdf', req.fileB64) : '');
     db.bills.push({ id: uid_('b'), projectId: p5.id, vendor: String(req.vendor).trim(), no: req.no || '', amount: Number(req.amount), date: req.date || new Date().toISOString().slice(0, 10), note: req.note || '', file: fid, fileId: fid, fileName: req.fileName || '', status: 'pending', adminNote: '', by: u.name, byId: u.id, ts: Date.now() });
-    logIt_(db, u.name, p5.id, 'added a bill', req.vendor + ' · Rs.' + Number(req.amount).toLocaleString('en-IN') + ' (sent for admin review)');
+    logIt_(db, u.name, p5.id, 'added a bill', req.vendor + ' Rs.' + Number(req.amount).toLocaleString('en-IN') + ' (sent for admin review)');
     return { ok: true, state: stateFor_(db, u) };
   }
+  
   if (a === 'reviewBill') {
     require_(db, req.token, ['admin']);
     var rb = null;
@@ -416,16 +438,17 @@ function handle_(db, req) {
       rb.status = 'approved';
       rb.adminNote = req.note ? String(req.note) : rb.adminNote;
       rb.reviewedTs = Date.now();
-      logIt_(db, u.name, rb.projectId, 'approved a bill', rb.vendor + ' · Rs.' + rb.amount.toLocaleString('en-IN') + ' (moved to the project)');
+      logIt_(db, u.name, rb.projectId, 'approved a bill', rb.vendor + ' Rs.' + rb.amount.toLocaleString('en-IN') + ' (moved to the project)');
     } else if (req.decision === 'addons') {
-      if (!req.note) throw 'Say what add-on is needed (document, detail or correction).';
+      if (!req.note) throw 'Say what add-on is needed.';
       rb.status = 'addons';
       rb.adminNote = String(req.note);
       rb.reviewedTs = Date.now();
-      logIt_(db, u.name, rb.projectId, 'asked for add-ons on a bill', rb.vendor + ': "' + rb.adminNote + '"');
+      logIt_(db, u.name, rb.projectId, 'asked for add-ons on a bill', rb.vendor + ':"' + rb.adminNote + '"');
     } else throw 'Unknown decision.';
     return { ok: true, state: stateFor_(db, u) };
   }
+  
   if (a === 'resubmitBill') {
     var ru = require_(db, req.token, ['pm', 'admin']);
     var sb = null;
@@ -434,11 +457,14 @@ function handle_(db, req) {
     if (ru.role === 'pm' && sb.byId !== ru.id && sb.by !== ru.name) throw 'Not your bill.';
     if (sb.status === 'approved') throw 'This bill is already approved.';
     if (req.note) sb.note = (sb.note ? sb.note + '\n' : '') + 'Add-on: ' + String(req.note);
-    if (req.fileB64) { var nid = storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'addon'), req.fileMime || 'application/pdf', req.fileB64); sb.file = nid; sb.fileId = nid; sb.fileName = req.fileName || ''; }
+    if (req.fileB64) { 
+      var nid = storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'addon'), req.fileMime || 'application/pdf', req.fileB64);
+      sb.file = nid; sb.fileId = nid; sb.fileName = req.fileName || ''; 
+    }
     sb.status = 'pending';
-    logIt_(db, u.name, sb.projectId, 'sent a bill back for review', sb.vendor + (req.note ? ': "' + String(req.note).slice(0, 60) + '"' : ''));
+    logIt_(db, u.name, sb.projectId, 'sent a bill back for review', sb.vendor + (req.note ? ' "' + String(req.note).slice(0, 60) + '"' : ''));
     return { ok: true, state: stateFor_(db, u) };
   }
-
+  
   throw 'Unknown action: ' + a;
 }
