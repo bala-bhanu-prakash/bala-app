@@ -1,20 +1,21 @@
 /* ================================================================
-   Bala - construction site updates & approvals
-   Backend: Google Apps Script web app (runs under the OWNER's Google
-   account; all data + photos + bills live in the OWNER's Drive).
-   v3: cache layer (fast reads), bills review workflow, fileId for bills.
-   Setup: paste this file into script.google.com, Deploy > New
-   deployment > Web app > Execute as: Me > Access: Anyone.
+   Brightlook Homes - construction site updates, approvals & payments
+   Backend: Google Apps Script web app (runs under the OWNER's account).
+   v4: fast uploads, lightweight responses, payments, branding.
+   Setup: paste into script.google.com (replace all of Code.gs), save, then
+   Deploy > Manage deployments > pencil > Version: New version > Deploy.
+   Do NOT use "New deployment" - that changes the URL.
    ================================================================ */
 
 var FOLDER_NAME = 'Bala App Data';
 var DB_FILE = 'data.json';
+var DEFAULT_BRAND = 'Brightlook Homes';
 
 /* ---------- storage (with cache layer) ---------- */
-var CK = 'db_v1';            // cache key prefix for the database
-var CHUNK = 90000;           // CacheService allows ~100 KB per key
+var CK = 'db_v1';
+var CHUNK = 90000;
 function props_() { return PropertiesService.getScriptProperties(); }
-function emptyDb_() { return { users: [], projects: {}, updates: [], approvals: [], bills: [], log: [], settings: { waNumber: '' } }; }
+function emptyDb_() { return { users: [], projects: {}, updates: [], approvals: [], bills: [], payments: [], log: [], settings: { waNumber: '', brandName: DEFAULT_BRAND, tagline: '' } }; }
 
 function folder_() {
   var P = props_(), id = P.getProperty('FOLDER_ID');
@@ -26,12 +27,27 @@ function folder_() {
 }
 function mediaFolder_() {
   var P = props_(), id = P.getProperty('MEDIA_ID');
-  if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
+  if (id) {
+    try {
+      var mf = DriveApp.getFolderById(id);
+      ensureShared_(mf);
+      return mf;
+    } catch (e) {}
+  }
   var root = folder_();
   var it = root.getFoldersByName('media');
   var f = it.hasNext() ? it.next() : root.createFolder('media');
   P.setProperty('MEDIA_ID', f.getId());
+  ensureShared_(f);
   return f;
+}
+// Share the media FOLDER once; every file inside inherits it.
+// (Sharing each file separately was one of the slowest steps.)
+function ensureShared_(f) {
+  var P = props_();
+  if (P.getProperty('MEDIA_SHARED') === '1') return;
+  f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  P.setProperty('MEDIA_SHARED', '1');
 }
 function dbFile_() {
   var P = props_(), id = P.getProperty('DB_ID');
@@ -63,11 +79,14 @@ function cachePut_(json) {
   } catch (e) { try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {} }
 }
 function normalize_(db) {
-  ['users', 'approvals', 'bills', 'log', 'updates'].forEach(function (k) { if (!db[k]) db[k] = []; });
+  ['users', 'approvals', 'bills', 'log', 'updates', 'payments'].forEach(function (k) { if (!db[k]) db[k] = []; });
   if (!db.projects) db.projects = {};
-  if (!db.settings) db.settings = { waNumber: '' };
+  if (!db.settings) db.settings = {};
+  if (db.settings.waNumber == null) db.settings.waNumber = '';
+  if (!db.settings.brandName || db.settings.brandName === 'Bala') db.settings.brandName = DEFAULT_BRAND;
+  if (db.settings.tagline == null) db.settings.tagline = '';
   db.bills.forEach(function (b) {
-    if (!b.status) b.status = 'pending';          // older bills go to the review board
+    if (!b.status) b.status = 'pending';
     if (!b.fileId && b.file) { var m = String(b.file).match(/[?&]id=([\w-]+)/) || String(b.file).match(/\/d\/([\w-]+)/); b.fileId = m ? m[1] : String(b.file); }
   });
   return db;
@@ -76,31 +95,29 @@ function load_() {
   var cached = cacheGet_();
   if (cached) return normalize_(cached);
   var f = dbFile_();
-  if (!f) return emptyDb_();
+  if (!f) return normalize_(emptyDb_());
   var txt = f.getBlob().getDataAsString(), db;
-  try { db = JSON.parse(txt); } catch (e) { return emptyDb_(); }
+  try { db = JSON.parse(txt); } catch (e) { return normalize_(emptyDb_()); }
   cachePut_(txt);
   return normalize_(db);
 }
 function save_(db) {
   var json = JSON.stringify(db);
+  cachePut_(json);          // cache first: reads are instant right away
   var f = dbFile_();
   if (f) f.setContent(json);
   else { var nf = folder_().createFile(DB_FILE, json, MimeType.PLAIN_TEXT); props_().setProperty('DB_ID', nf.getId()); }
-  cachePut_(json);          // write-through: next read is instant
 }
 function storeFile_(name, mime, b64) {
   var blob = Utilities.newBlob(Utilities.base64Decode(b64), mime, name);
-  var f = mediaFolder_().createFile(blob);
-  f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  return f.getId();
+  return mediaFolder_().createFile(blob).getId();   // no per-file setSharing: folder is shared
 }
 function fileUrl_(id) { return id ? 'https://drive.usercontent.google.com/download?id=' + id + '&export=view' : ''; }
 
 /* ---------- auth ---------- */
 function tokenFor_(userId) {
   var t = Utilities.getUuid() + Utilities.getUuid();
-  CacheService.getScriptCache().put('t_' + t, userId, 21600); // 6 h
+  CacheService.getScriptCache().put('t_' + t, userId, 21600);
   return t;
 }
 function userFor_(db, token) {
@@ -124,11 +141,13 @@ function logIt_(db, actor, projectId, action, detail) {
 
 /* ---------- state shaping per role ---------- */
 function stateFor_(db, u) {
-  var out = { me: { id: u.id, name: u.name, role: u.role, username: u.username }, settings: db.settings, projects: {}, updates: [], approvals: [] };
+  var out = { me: { id: u.id, name: u.name, role: u.role, username: u.username }, settings: db.settings, projects: {}, updates: [], approvals: [], payments: [] };
   var ids = u.role === 'admin' ? Object.keys(db.projects) : (u.projectIds || []);
   ids.forEach(function (pid) { if (db.projects[pid]) out.projects[pid] = db.projects[pid]; });
   out.updates = db.updates.filter(function (x) { return out.projects[x.projectId]; });
   out.approvals = db.approvals.filter(function (x) { return out.projects[x.projectId]; });
+  // payments are visible to admin and customers only (not site managers)
+  if (u.role === 'admin' || u.role === 'customer') out.payments = db.payments.filter(function (x) { return out.projects[x.projectId]; });
   if (u.role === 'pm') out.bills = db.bills.filter(function (b) { return b.byId === u.id || (!b.byId && b.by === u.name); });
   if (u.role === 'admin') {
     out.bills = db.bills;
@@ -137,13 +156,22 @@ function stateFor_(db, u) {
   }
   return out;
 }
+// Fast responses: when the app sends lite:true it gets just the changed item back
+// (and applies it locally) instead of the whole state.
+function reply_(db, u, req, extra) {
+  var r = { ok: true };
+  if (extra) for (var k in extra) r[k] = extra[k];
+  if (!req.lite) r.state = stateFor_(db, u);
+  return r;
+}
 
 /* ---------- entry points ---------- */
 function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify({ ok: true, service: 'bala-backend', time: Date.now() }))
     .setMimeType(ContentService.MimeType.JSON);
 }
-var READ_ONLY_ = { login: 1, state: 1 };
+// no lock + no database write: login, state, public branding, photo upload
+var READ_ONLY_ = { login: 1, state: 1, 'public': 1, uploadPhoto: 1 };
 function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 function doPost(e) {
   var req;
@@ -157,7 +185,7 @@ function doPost(e) {
     if (!readOnly) save_(db);
     return out_(res);
   } catch (err) {
-    if (!readOnly) { try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {} }  // drop cache after a failed write
+    if (!readOnly) { try { CacheService.getScriptCache().remove(CK + '_n'); } catch (e2) {} }
     return out_({ ok: false, error: String(err) });
   } finally {
     if (lock) lock.releaseLock();
@@ -166,6 +194,9 @@ function doPost(e) {
 
 function handle_(db, req) {
   var a = req.action;
+
+  // Branding for the login screen (before anyone signs in)
+  if (a === 'public') return { ok: true, brandName: db.settings.brandName, tagline: db.settings.tagline };
 
   if (a === 'login') {
     for (var i = 0; i < db.users.length; i++) {
@@ -178,7 +209,6 @@ function handle_(db, req) {
   }
 
   if (a === 'bootstrap') {
-    // one-time: create the first admin. Refuses once any user exists.
     if (db.users.length) throw 'Already set up.';
     if (!req.name || !req.username || !req.pass) throw 'Name, ID and password are needed.';
     var admin = { id: uid_('u'), username: String(req.username).trim(), pass: String(req.pass), role: 'admin', name: String(req.name).trim(), projectIds: [], phone: '' };
@@ -192,10 +222,21 @@ function handle_(db, req) {
 
   if (a === 'state') return { ok: true, state: stateFor_(db, u) };
 
+  /* ----- photo upload: run in PARALLEL from the app, one call per photo.
+         No lock, no database write, so several photos upload at once. ----- */
+  if (a === 'uploadPhoto') {
+    require_(db, req.token, ['pm', 'admin']);
+    if (!req.b64) throw 'No photo received.';
+    var id = storeFile_('photo-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '.jpg', req.mime || 'image/jpeg', req.b64);
+    return { ok: true, fileId: id, url: fileUrl_(id) };
+  }
+
   /* ----- settings ----- */
   if (a === 'saveSettings') {
     require_(db, req.token, ['admin']);
     if (req.waNumber != null) db.settings.waNumber = String(req.waNumber).trim();
+    if (req.brandName != null && String(req.brandName).trim()) db.settings.brandName = String(req.brandName).trim();
+    if (req.tagline != null) db.settings.tagline = String(req.tagline).trim();
     return { ok: true, state: stateFor_(db, u) };
   }
 
@@ -239,6 +280,7 @@ function handle_(db, req) {
     db.projects[pid] = {
       id: pid, name: String(req.name).trim(), loc: req.loc || '', type: req.type || '',
       customers: req.customers || [], pm: req.pm || '', progress: 0,
+      contractValue: Number(req.contractValue) || 0,
       cover: req.coverB64 ? fileUrl_(storeFile_('cover-' + pid + '.jpg', req.coverMime || 'image/jpeg', req.coverB64)) : ''
     };
     logIt_(db, u.name, pid, 'added a project', req.name);
@@ -251,6 +293,7 @@ function handle_(db, req) {
     ['name', 'loc', 'type', 'pm'].forEach(function (k) { if (req[k] != null) p[k] = String(req[k]); });
     if (req.customers) p.customers = req.customers;
     if (req.progress != null) p.progress = Number(req.progress);
+    if (req.contractValue != null) p.contractValue = Number(req.contractValue) || 0;
     if (req.coverB64) p.cover = fileUrl_(storeFile_('cover-' + p.id + '-' + Date.now() + '.jpg', req.coverMime || 'image/jpeg', req.coverB64));
     logIt_(db, u.name, p.id, 'updated project details', p.name);
     return { ok: true, state: stateFor_(db, u) };
@@ -261,25 +304,29 @@ function handle_(db, req) {
     db.updates = db.updates.filter(function (x) { return x.projectId !== req.projectId; });
     db.approvals = db.approvals.filter(function (x) { return x.projectId !== req.projectId; });
     db.bills = db.bills.filter(function (x) { return x.projectId !== req.projectId; });
+    db.payments = db.payments.filter(function (x) { return x.projectId !== req.projectId; });
     logIt_(db, u.name, '', 'removed a project', req.projectId);
     return { ok: true, state: stateFor_(db, u) };
   }
 
-  /* ----- updates (pm or admin) ----- */
+  /* ----- updates (pm or admin) -----
+     Fast path: the app uploads photos first with uploadPhoto (in parallel),
+     then sends photoIds here. Old path (photos: [{b64}]) still works. */
   if (a === 'postUpdate') {
     require_(db, req.token, ['pm', 'admin']);
     var p2 = db.projects[req.projectId];
     if (!p2) throw 'Project not found.';
     if (!req.note) throw 'Write a short note.';
-    var photos = [];
+    var photos = (req.photoIds || []).map(fileUrl_);
     (req.photos || []).forEach(function (ph, i) {
       photos.push(fileUrl_(storeFile_('update-' + Date.now() + '-' + i + '.jpg', ph.mime || 'image/jpeg', ph.b64)));
     });
     var pct = req.progressPct != null ? Number(req.progressPct) : null;
-    db.updates.push({ id: uid_('u'), projectId: p2.id, type: req.type === 'material' ? 'material' : 'progress', author: u.name, note: String(req.note), photos: photos, progressPct: pct, ts: Date.now() });
+    var upd = { id: uid_('u'), projectId: p2.id, type: req.type === 'material' ? 'material' : 'progress', author: u.name, note: String(req.note), photos: photos, progressPct: pct, ts: Date.now() };
+    db.updates.push(upd);
     if (pct != null) p2.progress = pct;
     logIt_(db, u.name, p2.id, req.type === 'material' ? 'logged a material delivery' : 'posted a progress update', String(req.note).slice(0, 70));
-    return { ok: true, state: stateFor_(db, u) };
+    return reply_(db, u, req, { update: upd, progress: p2.progress });
   }
 
   /* ----- approvals ----- */
@@ -288,14 +335,14 @@ function handle_(db, req) {
     var p3 = db.projects[req.projectId];
     if (!p3) throw 'Project not found.';
     if (!req.title) throw 'Add what the customer should decide.';
-    var aphotos = [];
+    var aphotos = (req.photoIds || []).map(fileUrl_);
     (req.photos || []).forEach(function (ph, i) {
       aphotos.push(fileUrl_(storeFile_('approval-' + Date.now() + '-' + i + '.jpg', ph.mime || 'image/jpeg', ph.b64)));
     });
     var ap = { id: uid_('a'), projectId: p3.id, title: String(req.title).trim(), detail: req.detail || 'Please review and respond.', photos: aphotos, options: req.options || [], status: 'pending', comment: '', decidedBy: '', ts: Date.now(), decidedTs: null };
     db.approvals.push(ap);
     logIt_(db, u.name, p3.id, 'requested an approval', ap.title);
-    return { ok: true, approval: ap, state: stateFor_(db, u) };
+    return reply_(db, u, req, { approval: ap });
   }
   if (a === 'decide') {
     var ap2 = null;
@@ -303,13 +350,49 @@ function handle_(db, req) {
     if (!ap2) throw 'Approval not found.';
     if (ap2.status !== 'pending') throw 'Already decided.';
     var p4 = db.projects[ap2.projectId];
-    // customer must belong to the project; pm/admin may also record a decision
     ap2.status = req.status === 'approved' ? 'approved' : 'rejected';
     ap2.decidedTs = Date.now();
     ap2.decidedBy = u.name;
     ap2.comment = (req.choice ? req.choice + '. ' : '') + (req.comment || '');
     logIt_(db, u.name, ap2.projectId, ap2.status === 'approved' ? 'approved' : 'asked for changes on', ap2.title + (ap2.comment ? ': "' + ap2.comment + '"' : ''));
-    return { ok: true, approval: ap2, projectName: p4 ? p4.name : '', state: stateFor_(db, u) };
+    return reply_(db, u, req, { approval: ap2, projectName: p4 ? p4.name : '' });
+  }
+
+  /* ----- payments (admin adds; customers of that project can view) ----- */
+  if (a === 'addPayment') {
+    require_(db, req.token, ['admin']);
+    var pp = db.projects[req.projectId];
+    if (!pp) throw 'Project not found.';
+    if (!(Number(req.amount) > 0)) throw 'Add the amount received.';
+    var pay = {
+      id: uid_('pay'), projectId: pp.id, amount: Number(req.amount),
+      date: req.date || new Date().toISOString().slice(0, 10),
+      mode: req.mode || '',            // e.g. Cash, UPI, Bank transfer, Cheque
+      ref: req.ref || '',              // transaction / cheque no.
+      stage: req.stage || '',          // e.g. Advance, Slab, Finishing
+      note: req.note || '', by: u.name, ts: Date.now()
+    };
+    db.payments.push(pay);
+    logIt_(db, u.name, pp.id, 'recorded a payment', 'Rs.' + pay.amount.toLocaleString('en-IN') + (pay.stage ? ' · ' + pay.stage : ''));
+    return reply_(db, u, req, { payment: pay });
+  }
+  if (a === 'updatePayment') {
+    require_(db, req.token, ['admin']);
+    var up = null;
+    for (var i = 0; i < db.payments.length; i++) if (db.payments[i].id === req.paymentId) up = db.payments[i];
+    if (!up) throw 'Payment not found.';
+    if (req.amount != null) { if (!(Number(req.amount) > 0)) throw 'Add the amount received.'; up.amount = Number(req.amount); }
+    ['date', 'mode', 'ref', 'stage', 'note'].forEach(function (k) { if (req[k] != null) up[k] = String(req[k]); });
+    logIt_(db, u.name, up.projectId, 'edited a payment', 'Rs.' + up.amount.toLocaleString('en-IN'));
+    return reply_(db, u, req, { payment: up });
+  }
+  if (a === 'deletePayment') {
+    require_(db, req.token, ['admin']);
+    var gone = null;
+    db.payments = db.payments.filter(function (x) { if (x.id === req.paymentId) { gone = x; return false; } return true; });
+    if (!gone) throw 'Payment not found.';
+    logIt_(db, u.name, gone.projectId, 'removed a payment', 'Rs.' + gone.amount.toLocaleString('en-IN'));
+    return reply_(db, u, req, { deleted: gone.id });
   }
 
   /* ----- bills ----- */
@@ -319,7 +402,7 @@ function handle_(db, req) {
     if (!p5) throw 'Project not found.';
     if (!req.vendor) throw 'Add the vendor name.';
     if (!(Number(req.amount) > 0)) throw 'Add the bill amount.';
-    var fid = req.fileB64 ? storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'bill'), req.fileMime || 'application/pdf', req.fileB64) : '';
+    var fid = req.fileId || (req.fileB64 ? storeFile_('bill-' + Date.now() + '-' + (req.fileName || 'bill'), req.fileMime || 'application/pdf', req.fileB64) : '');
     db.bills.push({ id: uid_('b'), projectId: p5.id, vendor: String(req.vendor).trim(), no: req.no || '', amount: Number(req.amount), date: req.date || new Date().toISOString().slice(0, 10), note: req.note || '', file: fid, fileId: fid, fileName: req.fileName || '', status: 'pending', adminNote: '', by: u.name, byId: u.id, ts: Date.now() });
     logIt_(db, u.name, p5.id, 'added a bill', req.vendor + ' · Rs.' + Number(req.amount).toLocaleString('en-IN') + ' (sent for admin review)');
     return { ok: true, state: stateFor_(db, u) };
@@ -344,7 +427,6 @@ function handle_(db, req) {
     return { ok: true, state: stateFor_(db, u) };
   }
   if (a === 'resubmitBill') {
-    // PM (owner of the bill) or admin sends an add-on / corrected file back for review
     var ru = require_(db, req.token, ['pm', 'admin']);
     var sb = null;
     for (var i = 0; i < db.bills.length; i++) if (db.bills[i].id === req.billId) sb = db.bills[i];
