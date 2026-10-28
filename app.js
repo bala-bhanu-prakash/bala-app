@@ -14,7 +14,7 @@ function go(h){location.hash=h}
 let toastT;function toast(msg){clearTimeout(toastT);const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.appendChild(t);toastT=setTimeout(()=>t.remove(),2600)}
 const app=document.getElementById('app'), overlayRoot=document.getElementById('overlay-root');
 function topbar(crumb){
-  return `<div class="topbar"><div class="wordmark">Bala</div>
+  return `<div class="topbar"><div class="wordmark">Brightlook Homes</div>
   ${S?`<span class="user-pill">${esc(S.me.name)} · ${esc(S.me.role==='pm'?'Project Manager':S.me.role)}</span><button class="role-switch" onclick="logout()">Log out</button>`:''}
   ${crumb?`<div class="crumb">${crumb}</div>`:''}</div>`;
 }
@@ -34,8 +34,8 @@ function showWaMsg(o){
   overlayRoot.innerHTML=`<div class="wa-overlay" onclick="if(event.target===this)closeWa('${o.after||''}')">
   <button class="wa-close" onclick="closeWa('${o.after||''}')">Close</button>
   <div class="phone"><div class="scr">
-    <div class="wa-head"><div class="wa-av">B</div><div><div class="nm">Bala Updates</div><div class="st">To: ${esc(o.to)} · WhatsApp</div></div></div>
-    <div class="wa-chat"><div class="wa-msg"><div class="biz">~ Bala Updates</div><p>${o.body}</p>
+    <div class="wa-head"><div class="wa-av">B</div><div><div class="nm">Brightlook Homes Updates</div><div class="st">To: ${esc(o.to)} · WhatsApp</div></div></div>
+    <div class="wa-chat"><div class="wa-msg"><div class="biz">~ Brightlook Homes Updates</div><p>${o.body}</p>
       ${o.href?`<a class="walink" href="${o.href}" onclick="closeWa('')">${o.btn}</a>`:''}<div class="meta">${t} <b>✓✓</b></div></div></div>
     <div class="wa-note">Tap below — WhatsApp opens with this message pre-filled. Just press send.<br><a href="${real}" target="_blank" rel="noopener" style="display:block;background:#25d366;color:#07300f;font-weight:800;text-align:center;padding:12px;border-radius:10px;margin-top:8px;font-size:14.5px">Send on WhatsApp →</a></div>
   </div></div></div>`;
@@ -62,7 +62,7 @@ function mediaUrl(p){const m=String(p||'').match(/[?&]id=([\w-]+)/)||String(p||'
 
 /* ---------- login ---------- */
 function viewLogin(){
-  app.innerHTML=`<div class="login-wrap"><div class="wordmark">Bala</div>
+  app.innerHTML=`<div class="login-wrap"><div class="wordmark">Brightlook Homes</div>
   <div class="hero" style="padding:0 0 14px"><h1 style="font-size:24px">Sign in to continue</h1><p>Site updates and approvals for your project.</p></div>
   <div class="card" style="padding:18px"><form onsubmit="doLogin(this);return false">
     <div class="field"><label>ID</label><input type="text" id="lg-id" autocomplete="username" autocapitalize="none" placeholder="Your ID"></div>
@@ -82,10 +82,10 @@ function logout(){TOKEN='';localStorage.removeItem('bala.token');S=null;go('#/lo
 
 /* ---------- first-time setup ---------- */
 function viewSetup(){
-  app.innerHTML=`<div class="login-wrap"><div class="wordmark">Bala</div>
+  app.innerHTML=`<div class="login-wrap"><div class="wordmark">Brightlook Homes</div>
   <div class="hero" style="padding:0 0 14px"><h1 style="font-size:24px">First-time setup</h1><p>Create the admin login. This works only once, before any login exists.</p></div>
   <div class="card" style="padding:18px"><form onsubmit="doSetup(this);return false">
-    <div class="field"><label>Your name</label><input type="text" id="su-name" placeholder="e.g. Bala Bhanu Prakash"></div>
+    <div class="field"><label>Your name</label><input type="text" id="su-name" placeholder="e.g. Prakash"></div>
     <div class="field"><label>Choose an admin ID</label><input type="text" id="su-id" autocapitalize="none" placeholder="e.g. admin"></div>
     <div class="field"><label>Choose a password</label><input type="text" id="su-pw" placeholder="Something you will remember"></div>
     <div class="field"><label>WhatsApp number for notifications (with country code)</label><input type="tel" id="su-wa" placeholder="e.g. 9163XXXXXXXX"></div>
